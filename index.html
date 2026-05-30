@@ -622,22 +622,115 @@ svg.ico{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:2;stro
 
 <div class="toast" id="toast"></div>
 
-<script>
+<script type="module">
 // ═══════════════════════════════════════════════════════════════
-//  DATABASE (localStorage)
+//  FIREBASE INIT
 // ═══════════════════════════════════════════════════════════════
-const DB={
-  _get(k){try{return JSON.parse(localStorage.getItem('lw_'+k))||null}catch{return null}},
-  _set(k,v){try{localStorage.setItem('lw_'+k,JSON.stringify(v))}catch{}},
-  getUsers(){return this._get('users')||[]}, setUsers(u){this._set('users',u)},
-  getRegs(){return this._get('regs')||[]},   setRegs(r){this._set('regs',r)},
-  getHistory(){return this._get('history')||[]}, setHistory(h){this._set('history',h)},
-  getEvents(){
-    const s=this._get('custom_events');
-    return(s&&s.length)?s:DEFAULT_EVENTS();
-  },
-  setEvents(e){this._set('custom_events',e)}
+import{initializeApp}from'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
+import{getFirestore,doc,getDoc,setDoc,collection,getDocs,deleteDoc,writeBatch,onSnapshot,query}from'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+
+const firebaseConfig={
+  apiKey:"AIzaSyBNrLRRYXLN30ClgGJha3eUmMoHeKVz6VQ",
+  authDomain:"doom-alliance.firebaseapp.com",
+  databaseURL:"https://doom-alliance-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId:"doom-alliance",
+  storageBucket:"doom-alliance.firebasestorage.app",
+  messagingSenderId:"89766706332",
+  appId:"1:89766706332:web:da10087cd6e7b8bd948159"
 };
+const fbApp=initializeApp(firebaseConfig);
+const db=getFirestore(fbApp);
+
+// ═══════════════════════════════════════════════════════════════
+//  DATABASE — Firebase Firestore (async, realtime)
+//  Local cache so sync renders work — Firebase keeps truth.
+// ═══════════════════════════════════════════════════════════════
+const CACHE={users:[],regs:[],history:[],events:null};
+
+async function fbGet(col){
+  const snap=await getDocs(collection(db,col));
+  return snap.docs.map(d=>({id:d.id,...d.data()}));
+}
+async function fbSet(col,id,data){
+  await setDoc(doc(db,col,id),data);
+}
+async function fbDel(col,id){
+  await deleteDoc(doc(db,col,id));
+}
+
+const DB={
+  // ── USERS ──
+  getUsers(){return CACHE.users;},
+  async loadUsers(){CACHE.users=await fbGet('users');return CACHE.users;},
+  async setUsers(arr){
+    CACHE.users=arr;
+    const batch=writeBatch(db);
+    arr.forEach(u=>batch.set(doc(db,'users',u.id),u));
+    // We do full batch replace when called (rare — role changes, deletes)
+    const existing=await getDocs(collection(db,'users'));
+    existing.docs.forEach(d=>{if(!arr.find(u=>u.id===d.id))batch.delete(d.ref);});
+    await batch.commit();
+  },
+  async saveUser(u){CACHE.users=CACHE.users.map(x=>x.id===u.id?u:x);if(!CACHE.users.find(x=>x.id===u.id))CACHE.users.push(u);await fbSet('users',u.id,u);},
+  async deleteUser(uid){CACHE.users=CACHE.users.filter(x=>x.id!==uid);await fbDel('users',uid);},
+
+  // ── REGS ──
+  getRegs(){return CACHE.regs;},
+  async loadRegs(){CACHE.regs=await fbGet('regs');return CACHE.regs;},
+  async saveReg(r){CACHE.regs=CACHE.regs.map(x=>x.id===r.id?r:x);if(!CACHE.regs.find(x=>x.id===r.id))CACHE.regs.push(r);await fbSet('regs',r.id,r);},
+  async deleteReg(rid){CACHE.regs=CACHE.regs.filter(x=>x.id!==rid);await fbDel('regs',rid);},
+  async setRegs(arr){
+    CACHE.regs=arr;
+    const batch=writeBatch(db);
+    const existing=await getDocs(collection(db,'regs'));
+    existing.docs.forEach(d=>{if(!arr.find(r=>r.id===d.id))batch.delete(d.ref);});
+    arr.forEach(r=>batch.set(doc(db,'regs',r.id),r));
+    await batch.commit();
+  },
+
+  // ── HISTORY ──
+  getHistory(){return CACHE.history;},
+  async loadHistory(){CACHE.history=await fbGet('history');return CACHE.history;},
+  async setHistory(arr){
+    CACHE.history=arr;
+    const batch=writeBatch(db);
+    const existing=await getDocs(collection(db,'history'));
+    existing.docs.forEach(d=>{if(!arr.find(h=>h.id===d.id))batch.delete(d.ref);});
+    arr.forEach(h=>{if(!h.id)h.id='h_'+Date.now()+'_'+Math.random().toString(36).slice(2);batch.set(doc(db,'history',h.id),h);});
+    await batch.commit();
+  },
+  async saveHistory(h){if(!h.id)h.id='h_'+Date.now()+'_'+Math.random().toString(36).slice(2);CACHE.history=CACHE.history.filter(x=>x.id!==h.id);CACHE.history.push(h);await fbSet('history',h.id,h);},
+
+  // ── EVENTS ──
+  getEvents(){return CACHE.events&&CACHE.events.length?CACHE.events:DEFAULT_EVENTS();},
+  async loadEvents(){
+    const arr=await fbGet('events');
+    CACHE.events=arr.length?arr:null;
+    return this.getEvents();
+  },
+  async setEvents(arr){
+    CACHE.events=arr;
+    const batch=writeBatch(db);
+    const existing=await getDocs(collection(db,'events'));
+    existing.docs.forEach(d=>{if(!arr.find(e=>e.id===d.id))batch.delete(d.ref);});
+    arr.forEach(e=>batch.set(doc(db,'events',e.id),e));
+    await batch.commit();
+  },
+  async saveEvent(e){CACHE.events=CACHE.events||[];CACHE.events=CACHE.events.map(x=>x.id===e.id?e:x);if(!CACHE.events.find(x=>x.id===e.id))CACHE.events.push(e);await fbSet('events',e.id,e);},
+  async deleteEvent(eid){CACHE.events=(CACHE.events||[]).filter(x=>x.id!==eid);await fbDel('events',eid);},
+};
+
+// ── Loading overlay ──
+function showLoading(msg){
+  let el=document.getElementById('fb-loading');
+  if(!el){el=document.createElement('div');el.id='fb-loading';
+    el.style.cssText='position:fixed;inset:0;background:rgba(10,12,15,0.92);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:999;font-family:var(--font-head)';
+    el.innerHTML='<div style="font-size:32px;margin-bottom:12px">⚔️</div><div style="color:var(--gold);font-size:18px;font-weight:700;letter-spacing:1px" id="fb-loading-msg"></div>';
+    document.body.appendChild(el);}
+  document.getElementById('fb-loading-msg').textContent=msg||'Chargement…';
+  el.style.display='flex';
+}
+function hideLoading(){const el=document.getElementById('fb-loading');if(el)el.style.display='none';}
 
 // ═══════════════════════════════════════════════════════════════
 //  DEFAULT EVENTS
@@ -756,12 +849,8 @@ function setEditFlag(emoji){
 }
 
 function migrateFlags(){
-  let users=DB.getUsers();let changed=false;
-  users=users.map(u=>{const v=toFlagCode(u.flag||'');if(v!==u.flag){u.flag=v;changed=true;}return u;});
-  if(changed)DB.setUsers(users);
-  let regs=DB.getRegs();let rc=false;
-  regs=regs.map(r=>{const v=toFlagCode(r.flag||'');if(v!==r.flag){r.flag=v;rc=true;}return r;});
-  if(rc)DB.setRegs(regs);
+  DB.getUsers().forEach(u=>{const v=toFlagCode(u.flag||DEFAULT_AVATAR);if(v!==u.flag){u.flag=v;DB.saveUser(u);}});
+  DB.getRegs().forEach(r=>{const v=toFlagCode(r.flag||DEFAULT_AVATAR);if(v!==r.flag){r.flag=v;DB.saveReg(r);}});
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1254,9 +1343,12 @@ async function doLogin(){
   const pseudo=document.getElementById('login-pseudo').value.trim();
   const pw=document.getElementById('login-pw').value;
   if(!pseudo||!pw){showAuthErr('login',t('err_fill'));return;}
+  showLoading(lang==='fr'?'Connexion…':'Connecting…');
+  // Load users from Firebase to get latest data
+  await DB.loadUsers();
   const h=await hashPw(pw);
   const u=DB.getUsers().find(x=>x.pseudo.toLowerCase()===pseudo.toLowerCase()&&x.pw===h);
-  if(!u){showAuthErr('login',t('err_login'));return;}
+  if(!u){hideLoading();showAuthErr('login',t('err_login'));return;}
   CU=u;initApp();
 }
 async function doRegister(){
@@ -1274,7 +1366,8 @@ async function doRegister(){
   const h=await hashPw(pw);
   const isFirst=users.length===0;
   const u={id:'u_'+Date.now(),pseudo,power,flag:regFlagSel,unit:regUnitSel,pw:h,role:isFirst?'admin':'player',createdAt:new Date().toISOString()};
-  users.push(u);DB.setUsers(users);CU=u;
+  await DB.saveUser(u);
+  CU=u;
   showToast(t('toast_welcome')+' '+pseudo,'success');
   initApp();
 }
@@ -1292,48 +1385,75 @@ function doLogout(){
 //  INIT APP
 // ═══════════════════════════════════════════════════════════════
 function migrateFlags(){
-  // Migrate any old emoji flags to ISO codes
+  // Migrate any old ISO codes to emoji
   let users=DB.getUsers();
-  let changed=false;
-  users=users.map(u=>{
-    const code=toFlagCode(u.flag||'__');
-    if(code!==u.flag){u.flag=code;changed=true;}
-    return u;
-  });
-  if(changed)DB.setUsers(users);
+  users.forEach(u=>{const v=toFlagCode(u.flag||DEFAULT_AVATAR);if(v!==u.flag){u.flag=v;DB.saveUser(u);}});
   let regs=DB.getRegs();
-  let rChanged=false;
-  regs=regs.map(r=>{
-    const code=toFlagCode(r.flag||'__');
-    if(code!==r.flag){r.flag=code;rChanged=true;}
-    return r;
-  });
-  if(rChanged)DB.setRegs(regs);
+  regs.forEach(r=>{const v=toFlagCode(r.flag||DEFAULT_AVATAR);if(v!==r.flag){r.flag=v;DB.saveReg(r);}});
 }
 
-function initApp(){
+async function initApp(){
+  showLoading(lang==='fr'?'Connexion…':'Connecting…');
+  // Load all data from Firebase
+  await Promise.all([DB.loadUsers(),DB.loadRegs(),DB.loadHistory(),DB.loadEvents()]);
+  // Refresh CU from cloud
+  if(CU){const fresh=DB.getUsers().find(x=>x.id===CU.id);if(fresh)CU=fresh;}
+  migrateFlags();
+  hideLoading();
   document.getElementById('screen-auth').style.display='none';
-  const app=document.getElementById('screen-app');
-  app.style.display='flex';app.style.flexDirection='column';app.style.height='100vh';
+  const appEl=document.getElementById('screen-app');
+  appEl.style.display='flex';appEl.style.flexDirection='column';appEl.style.height='100vh';
   document.getElementById('bottomnav').classList.remove('hidden');
   document.getElementById('bn-admin').style.display=(CU.role==='admin'||CU.role==='manager')?'flex':'none';
-  migrateFlags();
-  if(CU)CU=DB.getUsers().find(x=>x.id===CU.id)||CU; // refresh after migration
   buildFlagPicker('reg-flags','reg');
   buildFlagPicker('edit-flags','edit');
   const evs=DB.getEvents();
   listEventId=evs[0]?.id||null;
   admEvent=evs[0]?.id||null;
-  // Reset emoji picker display
-  const rd=document.getElementById('reg-flag-preview');
-  if(rd)rd.textContent=DEFAULT_AVATAR;
-  const rh=document.getElementById('reg-flag-hint');
-  if(rh)rh.textContent='';
+  const rd=document.getElementById('reg-flag-preview');if(rd)rd.textContent=DEFAULT_AVATAR;
+  const rh=document.getElementById('reg-flag-hint');if(rh)rh.textContent='';
   regFlagSel=DEFAULT_AVATAR;
   applyLang();
   navTo('home');
+  // Subscribe to realtime updates
+  subscribeRealtimeUpdates();
 }
 function refreshUser(){const u=DB.getUsers().find(x=>x.id===CU.id);if(u)CU=u;return CU;}
+
+// Realtime listeners — refresh UI when data changes remotely
+function subscribeRealtimeUpdates(){
+  onSnapshot(collection(db,'users'),snap=>{
+    CACHE.users=snap.docs.map(d=>({id:d.id,...d.data()}));
+    if(CU){const fresh=CACHE.users.find(x=>x.id===CU.id);if(fresh)CU=fresh;}
+    refreshCurrentPage();
+  });
+  onSnapshot(collection(db,'regs'),snap=>{
+    CACHE.regs=snap.docs.map(d=>({id:d.id,...d.data()}));
+    refreshCurrentPage();
+  });
+  onSnapshot(collection(db,'history'),snap=>{
+    CACHE.history=snap.docs.map(d=>({id:d.id,...d.data()}));
+    refreshCurrentPage();
+  });
+  onSnapshot(collection(db,'events'),snap=>{
+    const arr=snap.docs.map(d=>({id:d.id,...d.data()}));
+    CACHE.events=arr.length?arr:null;
+    refreshCurrentPage();
+  });
+}
+function refreshCurrentPage(){
+  const pid=(document.querySelector('.page.active')||{}).id;
+  if(!pid||!CU)return;
+  if(pid==='page-home')renderHome();
+  else if(pid==='page-events')renderEventsPage();
+  else if(pid==='page-list'){renderListTabs();}
+  else if(pid==='page-profile')renderProfile();
+  else if(pid==='page-admin'){
+    if(document.getElementById('adm-tab-events').classList.contains('active'))renderAdmEventTabs();
+    else if(document.getElementById('adm-tab-members').classList.contains('active'))renderAdmMembers();
+    else if(document.getElementById('adm-tab-manage').classList.contains('active'))renderAdmManage();
+  }
+}
 
 // ═══════════════════════════════════════════════════════════════
 //  NAVIGATION
@@ -1553,12 +1673,15 @@ function doRegisterEvent(){
     teamsToReg.forEach((team,i)=>regs.push({id:'r_'+Date.now()+'_'+i,userId:CU.id,pseudo:CU.pseudo,flag:CU.flag,power:CU.power,unit:CU.unit,event:ev.id,team,status:'pending',registeredAt:now}));
     showToast(t('toast_registered')+' — '+ev.name+' '+t('toast_team')+' '+teamsToReg.join('+'),'success');
   }
-  DB.setRegs(regs);selEventId=null;desertTeams={A:false,B:false};
+  // Save only the new regs that were just added
+  const existingIds=new Set(DB.getRegs().map(r=>r.id));
+  for(const r of regs.filter(r=>!existingIds.has(r.id)))await DB.saveReg(r);
+  selEventId=null;desertTeams={A:false,B:false};
   document.getElementById('ev-team-section').style.display='none';
   renderEventsPage();renderHome();
 }
-function cancelReg(rid){
-  DB.setRegs(DB.getRegs().filter(r=>r.id!==rid));
+async function cancelReg(rid){
+  await DB.deleteReg(rid);
   showToast(t('toast_cancelled'),'info');
   renderEventsPage();renderHome();
 }
@@ -1684,8 +1807,11 @@ async function saveProfile(){
   const idx=users.findIndex(x=>x.id===CU.id);if(idx===-1)return;
   users[idx].pseudo=pseudo;users[idx].power=power;users[idx].flag=editFlagSel;users[idx].unit=editUnitSel;
   if(pw&&pw.length>=4)users[idx].pw=await hashPw(pw);
-  DB.setRegs(DB.getRegs().map(r=>{if(r.userId===CU.id){r.pseudo=pseudo;r.flag=editFlagSel;r.power=power;r.unit=editUnitSel;}return r;}));
-  DB.setUsers(users);CU=users[idx];
+  // Update registrations for name/flag/power changes
+  const updatedRegs=DB.getRegs().filter(r=>r.userId===CU.id);
+  for(const r of updatedRegs){r.pseudo=pseudo;r.flag=editFlagSel;r.power=power;r.unit=editUnitSel;await DB.saveReg(r);}
+  CU=users[idx];
+  await DB.saveUser(CU);
   showToast(t('toast_profile'),'success');renderProfile();renderHome();
 }
 
@@ -1792,30 +1918,31 @@ function renderAdmList(){
     </div>`;
   }).join('');
 }
-function setRegStatus(rid,status){
+async function setRegStatus(rid,status){
   const regs=DB.getRegs(),r=regs.find(x=>x.id===rid);if(!r)return;
   if(r.status===status){
     r.status='pending';
   }else{
     r.status=status;
     const ev=getEvent(r.event);
-    // Determine which teams this registration covers
     const teams=r.team==='AB'?['A','B']:(r.team?[r.team]:['']);
-    // Remove existing history entries for this user/event/teams combo (current week only)
-    let hist=DB.getHistory().filter(h=>{
-      if(h.userId!==r.userId||h.event!==r.event)return true;
-      if(ev?.type==='single')return false; // remove single-team entry
-      return !teams.includes(h.team); // remove only matching teams
+    // Remove old history entries for this user/event/teams
+    const toDelete=DB.getHistory().filter(h=>{
+      if(h.userId!==r.userId||h.event!==r.event)return false;
+      if(ev?.type==='single')return true;
+      return teams.includes(h.team);
     });
-    // Save one history entry per team
+    for(const h of toDelete){await fbDel('history',h.id);}
+    CACHE.history=DB.getHistory().filter(h=>!toDelete.find(x=>x.id===h.id));
+    // Save new history entries
     if(['absent','miss','selected','reserve'].includes(status)){
-      teams.forEach(team=>{
-        hist.push({userId:r.userId,event:r.event,team:team||'',status,date:new Date().toISOString()});
-      });
+      for(const team of teams){
+        await DB.saveHistory({userId:r.userId,event:r.event,team:team||'',status,date:new Date().toISOString()});
+      }
     }
-    DB.setHistory(hist);
   }
-  DB.setRegs(regs);renderAdmList();
+  await DB.saveReg(r);
+  renderAdmList();
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1844,9 +1971,9 @@ function renderAdmMembers(){
     </div>`:''}
   </div>`).join('');
 }
-function setRole(uid,role){
+async function setRole(uid,role){
   const users=DB.getUsers(),u=users.find(x=>x.id===uid);if(!u)return;
-  u.role=role;DB.setUsers(users);showToast(u.pseudo+' → '+role,'success');renderAdmMembers();renderHome();
+  u.role=role;await DB.saveUser(u);showToast(u.pseudo+' → '+role,'success');renderAdmMembers();renderHome();
 }
 function askDeleteMember(uid){
   pendingDeleteId=uid;
@@ -1854,12 +1981,15 @@ function askDeleteMember(uid){
   document.getElementById('modal-delete-body').textContent=t('del_member_pre')+' "'+u.pseudo+'" '+t('del_member_post');
   document.getElementById('modal-delete-member').classList.add('active');
 }
-function confirmDeleteMember(){
+async function confirmDeleteMember(){
   if(!pendingDeleteId)return;
   const uid=pendingDeleteId;
-  DB.setUsers(DB.getUsers().filter(x=>x.id!==uid));
-  DB.setRegs(DB.getRegs().filter(r=>r.userId!==uid));
-  DB.setHistory(DB.getHistory().filter(h=>h.userId!==uid));
+  // Delete from Firebase
+  await DB.deleteUser(uid);
+  for(const r of DB.getRegs().filter(r=>r.userId===uid))await DB.deleteReg(r.id);
+  const histToDel=DB.getHistory().filter(h=>h.userId===uid);
+  for(const h of histToDel)await fbDel('history',h.id);
+  CACHE.history=DB.getHistory().filter(h=>h.userId!==uid);
   closeModal('delete-member');pendingDeleteId=null;
   showToast(t('toast_deleted'),'info');renderAdmMembers();
 }
@@ -1896,15 +2026,17 @@ function askDeleteEvent(id){
   document.getElementById('modal-delete-event-body').textContent=t('del_event_pre')+' "'+evName(ev)+'" '+t('del_event_post');
   document.getElementById('modal-delete-event').classList.add('active');
 }
-function confirmDeleteEvent(){
+async function confirmDeleteEvent(){
   if(!pendingDeleteEventId)return;
   const id=pendingDeleteEventId;
-  const evs=DB.getEvents().filter(e=>e.id!==id);
-  DB.setEvents(evs);
-  DB.setRegs(DB.getRegs().filter(r=>r.event!==id));
-  DB.setHistory(DB.getHistory().filter(h=>h.event!==id));
+  await DB.deleteEvent(id);
+  for(const r of DB.getRegs().filter(r=>r.event===id))await DB.deleteReg(r.id);
+  const histToDel=DB.getHistory().filter(h=>h.event===id);
+  for(const h of histToDel)await fbDel('history',h.id);
+  CACHE.history=DB.getHistory().filter(h=>h.event!==id);
   closeModal('delete-event');pendingDeleteEventId=null;
   showToast(t('toast_ev_deleted'),'info');
+  const evs=DB.getEvents();
   admEvent=evs[0]?.id||null;
   renderAdmManage();renderAdmEventTabs();renderHome();
 }
@@ -1962,7 +2094,7 @@ function confirmCreateEvent(){
     newEv.timeBFR=document.getElementById('nev-b-fr').value||'—';
     newEv.timeBSRV=document.getElementById('nev-b-srv').value||'—';
   }
-  const evs=DB.getEvents();evs.push(newEv);DB.setEvents(evs);
+  await DB.saveEvent(newEv);
   closeModal('create-event');
   showToast(t('toast_ev_created')+' : '+name,'success');
   renderAdmManage();renderAdmEventTabs();renderHome();renderEventsPage();
@@ -2036,12 +2168,15 @@ function confirmEditEvent(){
   }
 
   // If type changed, clear registrations for this event (structure incompatible)
-  if(typeChanged){
-    DB.setRegs(DB.getRegs().filter(r=>r.event!==editingEventId));
-    DB.setHistory(DB.getHistory().filter(h=>h.event!==editingEventId));
-  }
+  // (handled below after saveEvent)
 
-  DB.setEvents(evs);
+  await DB.saveEvent(evs[idx]);
+  if(typeChanged){
+    for(const r of DB.getRegs().filter(r=>r.event===editingEventId))await DB.deleteReg(r.id);
+    const histToDel=DB.getHistory().filter(h=>h.event===editingEventId);
+    for(const h of histToDel)await fbDel('history',h.id);
+    CACHE.history=DB.getHistory().filter(h=>h.event!==editingEventId);
+  }
   closeModal('edit-event');editingEventId=null;
   showToast(t('toast_ev_saved'),'success');
   renderAdmManage();renderAdmEventTabs();renderHome();renderEventsPage();
@@ -2095,10 +2230,12 @@ function openSplitModal(){
 // ═══════════════════════════════════════════════════════════════
 function openResetModal(){document.getElementById('modal-reset').classList.add('active');}
 function closeModal(id){document.getElementById('modal-'+id).classList.remove('active');}
-function doReset(){
+async function doReset(){
   const ev=getEvent(admEvent);if(!ev)return;
-  if(ev.type==='single'){DB.setRegs(DB.getRegs().filter(r=>r.event!==admEvent));}
-  else{DB.setRegs(DB.getRegs().filter(r=>!(r.event===admEvent&&(r.team===admTeam||r.team==='AB'))));}
+  const toDelete=ev.type==='single'
+    ?DB.getRegs().filter(r=>r.event===admEvent)
+    :DB.getRegs().filter(r=>r.event===admEvent&&(r.team===admTeam||r.team==='AB'));
+  for(const r of toDelete)await DB.deleteReg(r.id);
   closeModal('reset');showToast(t('toast_reset'),'info');renderAdmList();renderHome();
 }
 
@@ -2124,6 +2261,48 @@ function showToast(msg,type='info'){
 // ═══════════════════════════════════════════════════════════════
 applyLang();
 buildFlagPicker('reg-flags','reg');
+// Expose globals needed by inline onclick handlers
+window.toggleLang=toggleLang;
+window.authTab=authTab;
+window.doLogin=doLogin;
+window.doRegister=doRegister;
+window.doLogout=doLogout;
+window.navTo=navTo;
+window.selectUnit=selectUnit;
+window.toggleFlagPicker=toggleFlagPicker;
+window.switchEmojiCat=switchEmojiCat;
+window.pickEmoji=pickEmoji;
+window.selectEvent=selectEvent;
+window.selectSingleTeam=selectSingleTeam;
+window.toggleDesertTeam=toggleDesertTeam;
+window.selectDesertBoth=selectDesertBoth;
+window.doRegisterEvent=doRegisterEvent;
+window.cancelReg=cancelReg;
+window.listSelectEvent=listSelectEvent;
+window.listSelectTeam=listSelectTeam;
+window.saveProfile=saveProfile;
+window.admTab=admTab;
+window.admSelectEvent=admSelectEvent;
+window.admSelectTeam=admSelectTeam;
+window.setRegStatus=setRegStatus;
+window.setRole=setRole;
+window.askDeleteMember=askDeleteMember;
+window.confirmDeleteMember=confirmDeleteMember;
+window.renderAdmManage=renderAdmManage;
+window.openEditEventModal=openEditEventModal;
+window.selectEditType=selectEditType;
+window.confirmEditEvent=confirmEditEvent;
+window.askDeleteEvent=askDeleteEvent;
+window.confirmDeleteEvent=confirmDeleteEvent;
+window.openCreateEventModal=openCreateEventModal;
+window.selectNevColor=selectNevColor;
+window.selectNevEmoji=selectNevEmoji;
+window.selectEventType=selectEventType;
+window.confirmCreateEvent=confirmCreateEvent;
+window.openSplitModal=openSplitModal;
+window.openResetModal=openResetModal;
+window.closeModal=closeModal;
+window.doReset=doReset;
 </script>
 </body>
 </html>
